@@ -7,6 +7,8 @@
 
 发布语义：单事务内校验 expected_version 并整体替换 variants，
 版本不匹配或任务含坏行时回滚，已发布数据保持不变。
+读取语义：数据集详情在单个读事务快照内取版本号与位点行；
+发布响应的 variant_count 在提交前的同一写事务内统计。
 """
 from __future__ import annotations
 
@@ -130,6 +132,9 @@ class Store:
     def get_dataset_detail(self, dataset_id: int) -> dict | None:
         conn = self._connect()
         try:
+            # 显式读事务：WAL 下首条 SELECT 建立快照，版本号、任务号与位点行
+            # 必然来自同一已提交版本；并发发布仍可继续提交，不被本次读取阻塞。
+            conn.execute("BEGIN")
             row = conn.execute("SELECT * FROM datasets WHERE id = ?", (dataset_id,)).fetchone()
             if row is None:
                 return None
@@ -144,6 +149,8 @@ class Store:
             detail["variants"] = [self._variant_dict(v) for v in vrows]
             return detail
         finally:
+            # 只读事务结束（回滚不改变任何数据），释放快照
+            conn.rollback()
             conn.close()
 
     # ---------- 任务（上传暂存） ----------
@@ -261,10 +268,13 @@ class Store:
             if cur.rowcount != 1:  # 持写锁期间理论上不会发生，兜底
                 raise VersionConflictError(expected_version)
 
-            conn.commit()
+            # 在提交前的同一写事务内统计，响应数量必然属于本次发布，
+            # 不会混入随后提交的新版本位点。
             count = conn.execute(
                 "SELECT COUNT(*) AS c FROM variants WHERE dataset_id = ?", (dataset_id,)
             ).fetchone()["c"]
+
+            conn.commit()
             return {
                 "id": dataset_id,
                 "version": expected_version + 1,

@@ -28,6 +28,10 @@ VCF 缺 `#CHROM` 头、非 UTF-8 文件。
 
 - 上传生成**暂存任务**（job），处理期间查询仍返回**完整旧版**；
 - 发布按 `数据集号 + expected_version`（查询所得版本）在**单事务内整体替换**；
+- **查询是单快照读取**：数据集详情在同一个读事务内取版本号、发布任务号、染色体与位点行，
+  绝不会出现「旧版本号 + 新版位点」；WAL 下读快照不阻塞并发发布，并发读取仍看到完整旧版；
+- **发布响应只描述本次发布**：`version`、`published_job_id`、`variant_count` 均来自本次写事务，
+  提交前后的其他发布不会混入本次计数；
 - **并发替换只允许版本匹配者成功**（乐观锁）：不匹配返回 409 及当前版本；
 - **坏行任务或发布失败不改动旧版**：失败任务发布返回 422 及逐行原因，任何失败均回滚。
 
@@ -103,7 +107,7 @@ curl -s localhost:8000/datasets/1/jobs/1
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest tests/ -q          # 27 个测试：算法 + API + 并发发布
+.venv/bin/python -m pytest tests/ -q          # 30 个测试：算法 + API + 并发发布 + 读取/发布一致性
 DATABASE_PATH=data/variants.db .venv/bin/python -m uvicorn app.main:app --reload
 ```
 
